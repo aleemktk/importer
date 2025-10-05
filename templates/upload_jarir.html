@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Data Importer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background-color: #2f7676;
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 32px;
+        }
+
+        header p {
+            margin: 10px 0 0;
+            font-size: 16px;
+            color: #bdc3c7;
+        }
+
+        main {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        .upload-box {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .upload-box h2 {
+            margin-bottom: 20px;
+            font-size: 22px;
+            text-align: center;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+        }
+
+        footer {
+            background-color: #2f7676;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>AI Data Importer</h1>
+    <p>Jarir Pharmacy: Upload your XLSX file to process and insert data intelligently</p>
+</header>
+
+<main>
+
+    <div class="upload-box">
+    <h2>Upload XLSX File</h2>
+    <input type="file" id="csvFile" accept=".csv" required>
+    <button onclick="uploadFile()">Import File</button>
+    <div id="logBox" style="margin-top: 20px; font-size: 14px; color: #333;"></div>
+</div>
+
+      {% if logs %}
+    <h3>Logs</h3>
+    <ul>
+      {% for log in logs %}
+        <li>{{ log }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</main>
+
+<footer>
+    &copy; 2025 AI XLSX Data Importer. All rights reserved.
+</footer>
+
+<script>
+function uploadFile() {
+    const fileInput = document.getElementById('csvFile');
+    const logBox = document.getElementById('logBox');
+    const file = fileInput.files[0];
+    if (!file) return alert("Please select a file.");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    logBox.innerHTML = "Uploading file...<br>";
+
+    fetch("/upload_jarir", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.task_id) {
+            pollStatus(data.task_id);
+        } else {
+            logBox.innerHTML += "Failed to start task.<br>";
+        }
+    })
+    .catch(err => {
+        logBox.innerHTML += "Upload failed.<br>";
+        console.error(err);
+    });
+}
+
+function pollStatus(taskId) {
+    const logBox = document.getElementById('logBox');
+    const interval = setInterval(() => {
+        fetch(`/status/${taskId}`)
+        .then(res => res.json())
+        .then(data => {
+            logBox.innerHTML = data.logs.join("<br>");
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(interval);
+                if (data.report_url) {
+                    logBox.innerHTML += `<br><a href="${data.report_url}" target="_blank">Download Report</a>`;
+                }
+            }
+        });
+    }, 1000);
+}
+</script>
+
+</body>
+</html>
