@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Avenzur Inventory Importer</title>
+    <title>Avnezur Inventory Importer</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -82,8 +82,8 @@
 <body>
 
 <header>
-    <h1>Avenzur Inventory Importer</h1>
-    <p>Upload your XLSX file to process and insert data intelligently</p>
+    <h1>Import Products</h1>
+    <p>Rawabi Warehouse: Upload your XLSX file to process and insert products</p>
 </header>
 
 <main>
@@ -121,7 +121,7 @@ function uploadFile() {
 
     logBox.innerHTML = "Uploading file...<br>";
 
-    fetch("/upload", {
+    fetch("/upload_rawabi_products", {
         method: "POST",
         body: formData
     })

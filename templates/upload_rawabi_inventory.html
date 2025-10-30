@@ -82,8 +82,8 @@
 <body>
 
 <header>
-    <h1>Avenzur Inventory Importer</h1>
-    <p>Upload your XLSX file to process and insert data intelligently</p>
+    <h1>Import Inventory</h1>
+    <p>Rawabi Warehouse: Upload your XLSX file to process and insert inventory</p>
 </header>
 
 <main>
@@ -121,7 +121,7 @@ function uploadFile() {
 
     logBox.innerHTML = "Uploading file...<br>";
 
-    fetch("/upload", {
+    fetch("/rawabi_inventory_file", {
         method: "POST",
         body: formData
     })

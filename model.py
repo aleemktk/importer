@@ -9,6 +9,7 @@ class Product(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
+    name_ar = Column(String(255), nullable=False)
     item_code = Column(String(100), unique=True, nullable=False)
     code = Column(String(100), unique=True, nullable=False)
     cost = Column(Float, nullable=False)
@@ -35,6 +36,7 @@ class Purchase(Base):
     note = Column(String(1000))
     total = Column(Numeric(25, 5))
     total_net_purchase = Column(Numeric(25, 5))
+    old_total_net_purchase = Column(Numeric(25, 5), default=0.00)
     total_sale = Column(Numeric(25, 5))
     product_discount = Column(Numeric(25, 2))
     order_discount_id = Column(String(20))
@@ -165,7 +167,9 @@ class Supplier(Base):
     group_name = Column(String(255),  nullable=False)  
     name = Column(String(255),  nullable=False)  
     name_ar = Column(String(255),  nullable=False)  
-    company = Column(String(255),  nullable=False)  
+    company = Column(String(255),  nullable=False)
+    level = Column(Integer,  nullable=False)
+    external_id = Column(Integer,  nullable=True)  
 
 class Category(Base):
     __tablename__ = "sma_categories"

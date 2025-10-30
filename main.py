@@ -10,6 +10,7 @@ from database import SessionLocal
 from utils import read_excel_file, split_dataframe_in_batches, generate_excel_report
 from services.product_service import get_existing_product_codes, insert_missing_products
 from services.purchase_service import create_purchase
+from services.purchase_rawabi_service import create_rawabi_purchase
 from services.report_service import generate_import_report
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -53,6 +54,41 @@ async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
     background_tasks.add_task(process_file, task_id, file_location)
     return {"task_id": task_id}
 
+@app.post("/upload_rawabi_products")
+async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
+    task_id = str(uuid4())
+    file_location = f"temp/{task_id}_{file.filename}"
+    
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    tasks[task_id] = {
+        "status": "processing",
+        "logs": ["File received, starting import..."],
+        "report_url": None
+    }
+
+    background_tasks.add_task(rawabi_products_process_file, task_id, file_location)
+    return {"task_id": task_id}
+
+@app.post("/rawabi_inventory_file")
+async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
+    task_id = str(uuid4())
+    file_location = f"temp/{task_id}_{file.filename}"
+    
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    tasks[task_id] = {
+        "status": "processing",
+        "logs": ["File received, starting import..."],
+        "report_url": None
+    }
+
+    background_tasks.add_task(rawabi_inventory_process_file, task_id, file_location)
+    return {"task_id": task_id}
+
+
 @app.post("/upload_jarir")
 async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
     task_id = str(uuid4())
@@ -93,6 +129,160 @@ async def get_status(task_id: str):
 
 def log_step(task_id, message):
     tasks[task_id]["logs"].append(message)
+
+## RAWABI MASTER DATA
+def rawabi_products_process_file(task_id: str, file_path: str):
+    try:
+        start_time = datetime.datetime.now()
+        log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Step 1: Read Excel
+        log_step(task_id, "Step 1: Reading Excel file...")
+        df = pd.read_excel(file_path, header=None)
+        df = df.iloc[1:].reset_index(drop=True)  # skip header row manually
+
+        # Assign expected column names (position-based)
+        df.columns = [
+            "item_code", 
+            "item_name_ar",
+            "item_name_en", 
+            "item_vat"
+        ]
+
+        df = df.fillna({
+            "item_code": "",
+            "item_name_ar": "",
+            "item_name_en": "",
+            "item_vat": 0
+        })
+
+        log_step(task_id, f"📄 Loaded {len(df)} rows from file.")
+
+        # Step 2: Split into batches
+        log_step(task_id, "Step 2: Splitting file into batches...")
+        batches = split_dataframe_in_batches(df, BATCH_SIZE)
+
+        # Step 3: Process each batch
+        for i, batch_df in enumerate(batches):
+            session = SessionLocal()
+            try:
+                log_step(task_id, f"➡️ Processing batch {i + 1}/{len(batches)} with {len(batch_df)} records...")
+
+                # Convert DataFrame rows to a list of dictionaries
+                records = []
+                for _, row in batch_df.iterrows():
+                    records.append({
+                        "id" : row['item_code'],
+                        "name_ar": row["item_name_ar"] ,
+                        "name" : row["item_name_en"], 
+                        "item_code": row["item_code"],
+                        "code": row["item_code"],
+                        "tax_rate": 5
+                    })
+
+                # Bulk insert
+                session.bulk_insert_mappings(Product, records)
+                session.commit()
+
+                log_step(task_id, f"✅ Batch {i + 1} inserted successfully ({len(records)} records).")
+
+            except Exception as e:
+                session.rollback()
+                log_step(task_id, f"❌ Error in batch {i + 1}: {str(e)}")
+            finally:
+                session.close()
+
+        # Step 4: Final summary
+        end_time = datetime.datetime.now()
+        total_duration = end_time - start_time
+
+        log_step(task_id, "Step 3: All batches processed successfully.")
+        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        log_step(task_id, f"⏱️ Total Duration: {total_duration}")
+
+        tasks[task_id]["status"] = "completed"
+        log_step(task_id, "✅ Import completed successfully.")
+
+    except Exception as e:
+        tasks[task_id]["status"] = "failed"
+        log_step(task_id, f"❌ Fatal Error: {str(e)}")
+
+
+def rawabi_inventory_process_file(task_id: str, file_path: str):
+    try:
+        created_purchase_ids = []
+        created_transfer_ids = []
+        start_time = datetime.datetime.now()
+        log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        log_step(task_id, "Step 1: Reading Excel file...")
+        df = pd.read_excel(file_path, header=None)
+        df = df.iloc[1:].reset_index(drop=True)
+
+        df.columns = [
+            "item_code", "item_name", "item_batch_number",  "item_expiry_date",
+            "item_quantity", "item_sale_price", "item_total_sale_price",
+            "item_purchase_price", "item_total_purchase_price",
+            "item_cost_price", "item_total_cost_price",
+            "vat_value", "item_total_vat", "item_total_after_vat", "supplier_id", "supplier_name","item_discount"
+        ]
+
+   
+      
+        df["total_sale_vat"] = df["item_total_sale_price"] * df["vat_value"]
+        df["total_sale"] = df["item_total_sale_price"] + df["total_sale_vat"]
+        df["total_sale"] = df["total_sale"].fillna(0)
+        df["item_batch_number"] = df["item_batch_number"].fillna('AAA')
+        df["item_name"] = df["item_name"].fillna('empty product')
+        df["item_discount"] = df["item_discount"].fillna(0)
+        
+        
+          # Step 2: Group data by supplier
+        log_step(task_id, "Step 2: Grouping inventory by supplier_id...")
+        grouped = df.groupby("supplier_id")
+
+        # Step 3: Process each supplier batch
+        for supplier_id, supplier_df in grouped:
+            session = SessionLocal()
+            try:
+                log_step(task_id, f"➡️ Processing supplier_id {supplier_id} with {len(supplier_df)} items...")
+
+                result = create_rawabi_purchase(session, supplier_df)
+                if result.get("purchase_id"):
+                    created_purchase_ids.append(result["purchase_id"])
+
+
+                log_step(task_id, f"✅ Purchase created for supplier {supplier_id} with {len(supplier_df)} items.")
+
+            except Exception as e:
+                session.rollback()
+                log_step(task_id, f"❌ Error processing supplier {supplier_id}: {str(e)}")
+
+            finally:
+                session.close()
+
+        # Save dummy report (you'll replace this logic later)
+        # report_path = f"reports/{task_id}_report.xlsx"
+        # os.makedirs("reports", exist_ok=True)
+        # with open(report_path, "w") as f:
+        #     f.write("Dummy Excel content")
+        generate_excel_report(task_id, session, purchase_ids=created_purchase_ids, transfer_ids=created_transfer_ids)
+
+        end_time = datetime.datetime.now()
+        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")    
+
+        total_duration = end_time - start_time
+        log_step(task_id, f"⏱️ Total Duration: {total_duration}")
+
+        tasks[task_id]["status"] = "completed"
+        tasks[task_id]["report_url"] = f"/download/{task_id}"
+        log_step(task_id, "✅ Import completed successfully.")
+
+    except Exception as e:
+        tasks[task_id]["status"] = "failed"
+        log_step(task_id, f"❌ Error: {str(e)}")
+
+
 
 def process_file(task_id: str, file_path: str):
     try:
@@ -613,6 +803,14 @@ async def upload_form(request: Request):
 @app.get("/jarir/import_metadata", response_class=HTMLResponse)
 async def upload_form(request: Request):
     return templates.TemplateResponse("upload_jarir_metadata.html", {"request": request})
+
+@app.get("/rawabi/products", response_class=HTMLResponse)
+async def upload_form(request: Request):
+    return templates.TemplateResponse("upload_rawabi_products.html", {"request": request})
+
+@app.get("/rawabi/inventory", response_class=HTMLResponse)
+async def upload_form(request: Request):
+    return templates.TemplateResponse("upload_rawabi_inventory.html", {"request": request})
 
 
 @app.post("/upload_old", response_class=HTMLResponse)
