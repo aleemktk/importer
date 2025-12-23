@@ -37,6 +37,8 @@ os.makedirs("temp", exist_ok=True)
 
 tasks = {}
 
+
+
 @app.post("/upload")
 async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
     task_id = str(uuid4())
@@ -87,7 +89,6 @@ async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(rawabi_inventory_process_file, task_id, file_location)
     return {"task_id": task_id}
-
 
 @app.post("/upload_jarir")
 async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
@@ -219,22 +220,34 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
         df = pd.read_excel(file_path, header=None)
         df = df.iloc[1:].reset_index(drop=True)
 
+        # df.columns = [
+        #     "item_code", "item_name", "item_batch_number",  "item_expiry_date",
+        #     "item_quantity", "item_sale_price", "item_total_sale_price",
+        #     "item_purchase_price", "item_total_purchase_price",
+        #     "item_cost_price", "item_total_cost_price",
+        #     "vat_value", "item_total_vat", "item_total_after_vat", "supplier_id", "supplier_name","item_discount"
+        # ]
+
         df.columns = [
             "item_code", "item_name", "item_batch_number",  "item_expiry_date",
-            "item_quantity", "item_sale_price", "item_total_sale_price",
-            "item_purchase_price", "item_total_purchase_price",
-            "item_cost_price", "item_total_cost_price",
-            "vat_value", "item_total_vat", "item_total_after_vat", "supplier_id", "supplier_name","item_discount"
+            "item_quantity", "item_sale_price", 
+            "item_purchase_price",
+            "item_cost_price",
+            "vat_value", "supplier_id", "supplier_name"
         ]
-
    
-      
+
+        df["item_total_sale_price"] = df["item_sale_price"] * df["item_quantity"]
+        df["item_total_purchase_price"] = df["item_purchase_price"] * df["item_quantity"]
+        df["item_total_cost_price"] = df["item_cost_price"] * df["item_quantity"]
+        df["item_total_vat"] = (df["item_cost_price"] * df["vat_value"]) / 100
+        df["item_total_after_vat"] = df["item_total_cost_price"] + df["item_total_vat"]
+
         df["total_sale_vat"] = df["item_total_sale_price"] * df["vat_value"]
         df["total_sale"] = df["item_total_sale_price"] + df["total_sale_vat"]
-        df["total_sale"] = df["total_sale"].fillna(0)
         df["item_batch_number"] = df["item_batch_number"].fillna('AAA')
         df["item_name"] = df["item_name"].fillna('empty product')
-        df["item_discount"] = df["item_discount"].fillna(0)
+        df["item_discount"] = 0
         
         
           # Step 2: Group data by supplier
@@ -402,8 +415,8 @@ def process_file(task_id: str, file_path: str):
                 if result.get("purchase_id"):
                     created_purchase_ids.append(result["purchase_id"])
     
-                if result.get("transfer_id"):
-                    created_transfer_ids.append(result["transfer_id"])
+                # if result.get("transfer_id"):
+                #     created_transfer_ids.append(result["transfer_id"])
 
 
                 log_step(task_id, f"✅ Batch {i + 1} inserted successfully.")
