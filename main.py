@@ -19,7 +19,7 @@ from services.supplier_service import get_existing_suppliers, insert_missing_sup
 from services.category_service import get_existing_categories, insert_missing_categories
 from services.jarir.purchase_service import create_purchase as jarir_create_purchase
 from sqlalchemy import tuple_
-
+import sys
 
 import datetime
 app = FastAPI()
@@ -141,21 +141,33 @@ def rawabi_products_process_file(task_id: str, file_path: str):
         log_step(task_id, "Step 1: Reading Excel file...")
         df = pd.read_excel(file_path, header=None)
         df = df.iloc[1:].reset_index(drop=True)  # skip header row manually
+        df = df.dropna(how='all')
 
         # Assign expected column names (position-based)
+        # df.columns = [
+        #     "item_code", 
+        #     "item_name_ar",
+        #     "item_name_en", 
+        #     "item_vat"
+        # ]
+
+        # df = df.fillna({
+        #     "item_code": "",
+        #     "item_name_ar": "",
+        #     "item_name_en": "",
+        #     "item_vat": 0
+        # })
+
+
         df.columns = [
-            "item_code", 
-            "item_name_ar",
-            "item_name_en", 
-            "item_vat"
+            "item_code", "item_name", "item_batch_number",  "item_expiry_date",
+            "item_quantity",  "item_purchase_price", "vat_value",  "item_cost_price","item_sale_price", 
+            "supplier_id", "supplier_name"
         ]
 
-        df = df.fillna({
-            "item_code": "",
-            "item_name_ar": "",
-            "item_name_en": "",
-            "item_vat": 0
-        })
+        df = df.drop_duplicates(subset=['item_code'], keep='first').reset_index(drop=True)
+
+        log_step(task_id, f"✅ Removed duplicates. {len(df)} unique items remaining.")
 
         log_step(task_id, f"📄 Loaded {len(df)} rows from file.")
 
@@ -167,25 +179,45 @@ def rawabi_products_process_file(task_id: str, file_path: str):
         for i, batch_df in enumerate(batches):
             session = SessionLocal()
             try:
-                log_step(task_id, f"➡️ Processing batch {i + 1}/{len(batches)} with {len(batch_df)} records...")
+                log_step(task_id, f"➡️ Processing batch {i + 1}/{len(batches)}...")
 
-                # Convert DataFrame rows to a list of dictionaries
+                # 1. Get unique codes from this batch (clean up NaNs)
+                batch_codes = batch_df['item_code'].dropna().unique().tolist()
+                
+                # 2. Query DB once to find which of these codes ALREADY exist
+                existing_codes = session.query(Product.code).filter(Product.code.in_(batch_codes)).all()
+                existing_codes_set = {c[0] for c in existing_codes}
+
                 records = []
+                seen_in_this_batch = set() # To prevent duplicates if the same code repeats in this batch
+
                 for _, row in batch_df.iterrows():
+                    item_code = row['item_code']
+                    
+                    # Skip if NaN, already in DB, or already processed in this specific batch loop
+                    if pd.isna(item_code) or item_code in existing_codes_set or item_code in seen_in_this_batch:
+                        continue
+
+                    # Add to the insert list
                     records.append({
-                        "id" : row['item_code'],
-                        "name_ar": row["item_name_ar"] ,
-                        "name" : row["item_name_en"], 
-                        "item_code": row["item_code"],
-                        "code": row["item_code"],
+                        "name_ar": row["item_name"],
+                        "name": row["item_name"], 
+                        "code": item_code,
+                        "cost": row["item_cost_price"],
+                        "price" : row["item_sale_price"],
                         "tax_rate": 5
                     })
+                    
+                    # Mark as seen so if it appears again in the same batch, it's skipped
+                    seen_in_this_batch.add(item_code)
 
-                # Bulk insert
-                session.bulk_insert_mappings(Product, records)
-                session.commit()
-
-                log_step(task_id, f"✅ Batch {i + 1} inserted successfully ({len(records)} records).")
+                # 3. Bulk insert only the truly new records
+                if records:
+                    session.bulk_insert_mappings(Product, records)
+                    session.commit()
+                    log_step(task_id, f"✅ Batch {i + 1} done: {len(records)} new items added.")
+                else:
+                    log_step(task_id, f"ℹ️ Batch {i + 1}: No new records to insert.")
 
             except Exception as e:
                 session.rollback()
@@ -209,7 +241,7 @@ def rawabi_products_process_file(task_id: str, file_path: str):
         log_step(task_id, f"❌ Fatal Error: {str(e)}")
 
 
-def rawabi_inventory_process_file(task_id: str, file_path: str):
+def rawabi_inventory_process_file_old(task_id: str, file_path: str):
     try:
         created_purchase_ids = []
         created_transfer_ids = []
@@ -219,6 +251,7 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
         log_step(task_id, "Step 1: Reading Excel file...")
         df = pd.read_excel(file_path, header=None)
         df = df.iloc[1:].reset_index(drop=True)
+        df = df.dropna(how='all')
 
         # df.columns = [
         #     "item_code", "item_name", "item_batch_number",  "item_expiry_date",
@@ -230,10 +263,8 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
 
         df.columns = [
             "item_code", "item_name", "item_batch_number",  "item_expiry_date",
-            "item_quantity", "item_sale_price", 
-            "item_purchase_price",
-            "item_cost_price",
-            "vat_value", "supplier_id", "supplier_name"
+            "item_quantity",  "item_purchase_price", "vat_value",  "item_cost_price","item_sale_price", 
+            "supplier_id", "supplier_name"
         ]
    
 
@@ -249,6 +280,8 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
         df["item_name"] = df["item_name"].fillna('empty product')
         df["item_discount"] = 0
         
+        print(df.head(5))
+        sys.exit
         
           # Step 2: Group data by supplier
         log_step(task_id, "Step 2: Grouping inventory by supplier_id...")
@@ -294,6 +327,99 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
     except Exception as e:
         tasks[task_id]["status"] = "failed"
         log_step(task_id, f"❌ Error: {str(e)}")
+
+
+
+def rawabi_inventory_process_file(task_id: str, file_path: str):
+    try:
+        created_purchase_ids = []
+        start_time = datetime.datetime.now()
+        log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # --- Step 1: Data Preparation ---
+        df = pd.read_excel(file_path, header=None)
+        df = df.iloc[1:].reset_index(drop=True)
+        
+        df.columns = [
+            "item_code", "item_name", "item_batch_number", "item_expiry_date",
+            "item_quantity", "item_purchase_price", "vat_value", 
+            "item_cost_price", "item_sale_price", "supplier_id", "supplier_name"
+        ]
+
+        # Critical Validation: Remove rows with null item_code
+        initial_count = len(df)
+        df = df.dropna(subset=['item_code'])
+        if len(df) < initial_count:
+            log_step(task_id, f"⚠️ Dropped {initial_count - len(df)} rows due to missing item_code.")
+
+        # Vectorized Calculations (Faster than loops)
+        df["item_total_cost_price"] = df["item_cost_price"] * df["item_quantity"]
+        df["item_total_vat"] = (df["item_total_cost_price"] * df["vat_value"]) / 100
+        df["item_total_after_vat"] = df["item_total_cost_price"] + df["item_total_vat"]
+        df["item_batch_number"] = df["item_batch_number"].fillna('AAA')
+        df["item_name"] = df["item_name"].fillna('empty product')
+
+        # --- Step 2: Ensure Products Exist (The Runtime Check) ---
+        sync_products_in_db(task_id, df)
+
+        # --- Step 3: Group by Supplier & Create Orders ---
+        grouped = df.groupby("supplier_id")
+        for supplier_id, supplier_df in grouped:
+            session = SessionLocal()
+            try:
+                # Pass the cleaned dataframe to your purchase creation logic
+                result = create_rawabi_purchase(session, supplier_df)
+                if result.get("purchase_id"):
+                    created_purchase_ids.append(result["purchase_id"])
+                
+                session.commit()
+                log_step(task_id, f"✅ Purchase created for supplier {supplier_id}")
+            except Exception as e:
+                session.rollback()
+                log_step(task_id, f"❌ Error for supplier {supplier_id}: {str(e)}")
+            finally:
+                session.close()
+
+        # Finalize
+        generate_excel_report(task_id, created_purchase_ids) # Pass IDs, let function open own session
+        
+        tasks[task_id].update({"status": "completed", "report_url": f"/download/{task_id}"})
+        log_step(task_id, "✅ Import completed successfully.")
+
+    except Exception as e:
+        tasks[task_id]["status"] = "failed"
+        log_step(task_id, f"❌ Critical Error: {str(e)}")
+
+def sync_products_in_db(task_id, df):
+    """Checks all codes in DF, inserts missing ones into the products table."""
+    session = SessionLocal()
+    try:
+        unique_codes = df['item_code'].unique().tolist()
+        
+        # Find which codes already exist
+        existing_codes = session.query(Product.code).filter(Product.code.in_(unique_codes)).all()
+        existing_codes_set = {c[0] for c in existing_codes}
+
+        new_products = []
+        seen_in_df = set()
+
+        for _, row in df.iterrows():
+            code = str(row['item_code'])
+            if code not in existing_codes_set and code not in seen_in_df:
+                new_products.append({
+                    "code": code,
+                    "name": row["item_name"],
+                    "name_ar": row["item_name"],
+                    "tax_rate": row["vat_value"]
+                })
+                seen_in_df.add(code)
+
+        if new_products:
+            session.bulk_insert_mappings(Product, new_products)
+            session.commit()
+            log_step(task_id, f"🆕 Registered {len(new_products)} new products in database.")
+    finally:
+        session.close()
 
 
 
