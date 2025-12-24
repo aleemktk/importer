@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 Base = declarative_base()
 
 class Product(Base):
-    __tablename__ = 'sma_products'
+    __tablename__ = 'sma_products_ws'
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
