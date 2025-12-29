@@ -131,6 +131,23 @@ async def get_status(task_id: str):
 def log_step(task_id, message):
     tasks[task_id]["logs"].append(message)
 
+def log_product_comparison(task_id, session, item_code, excel_row):
+    """
+    Compare and log differences between Excel data and database for existing products.
+    
+    Args:
+        task_id: Task ID for logging
+        session: Database session
+        item_code: Product code to check
+        excel_row: Row from Excel file containing product data
+    """
+    db_product = session.query(Product).filter(Product.code == item_code).first()
+    
+    if db_product:
+        log_step(task_id, f"📋 Product {item_code} already exists - Comparison:")
+        log_step(task_id, f"   Excel: name='{excel_row['item_name']}', cost_price={excel_row['item_cost_price']}")
+        log_step(task_id, f"   DB: name='{db_product.name}', cost={db_product.cost}")
+
 ## RAWABI MASTER DATA
 def rawabi_products_process_file(task_id: str, file_path: str):
     try:
@@ -165,6 +182,10 @@ def rawabi_products_process_file(task_id: str, file_path: str):
             "supplier_id", "supplier_name"
         ]
 
+        # Replace NaN values with 0 for numeric columns to avoid MySQL errors
+        df["item_cost_price"] = df["item_cost_price"].fillna(0)
+        df["item_sale_price"] = df["item_sale_price"].fillna(0)
+
         df = df.drop_duplicates(subset=['item_code'], keep='first').reset_index(drop=True)
 
         log_step(task_id, f"✅ Removed duplicates. {len(df)} unique items remaining.")
@@ -192,10 +213,15 @@ def rawabi_products_process_file(task_id: str, file_path: str):
                 seen_in_this_batch = set() # To prevent duplicates if the same code repeats in this batch
 
                 for _, row in batch_df.iterrows():
-                    item_code = row['item_code']
+                    item_code = str(int(row['item_code'])) if pd.notna(row['item_code']) else None
                     
                     # Skip if NaN, already in DB, or already processed in this specific batch loop
-                    if pd.isna(item_code) or item_code in existing_codes_set or item_code in seen_in_this_batch:
+                    if item_code is None or item_code in seen_in_this_batch:
+                        continue
+                    
+                    # Check if already exists in DB and log comparison
+                    if item_code in existing_codes_set:
+                        log_product_comparison(task_id, session, item_code, row)
                         continue
 
                     # Add to the insert list
@@ -353,6 +379,10 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
             log_step(task_id, f"⚠️ Dropped {initial_count - len(df)} rows due to missing item_code.")
 
         # Vectorized Calculations (Faster than loops)
+        df["item_total_sale_price"] = df["item_sale_price"] * df["item_quantity"]
+        df["total_sale_vat"] = df["item_total_sale_price"] * df["vat_value"]
+        df["total_sale"] = df["item_total_sale_price"] + df["total_sale_vat"]
+        
         df["item_total_cost_price"] = df["item_cost_price"] * df["item_quantity"]
         df["item_total_vat"] = (df["item_total_cost_price"] * df["vat_value"]) / 100
         df["item_total_after_vat"] = df["item_total_cost_price"] + df["item_total_vat"]
