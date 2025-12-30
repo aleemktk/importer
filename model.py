@@ -88,8 +88,8 @@ class Transfer(Base):
 
 
 
-class PurchaseItem(Base):
-    __tablename__ = 'sma_purchase_items'
+class PurchaseItem(Base):   
+    __tablename__ = 'sma_purchase_order_items'
 
     id = Column(Integer, primary_key=True, index=True)
     purchase_id = Column(Integer, nullable=True)

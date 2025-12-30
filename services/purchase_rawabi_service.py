@@ -52,7 +52,9 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
         total_tax=total_vat,
         grand_total=grand_total,
         status='received',
-        created_by=9
+        created_by=9,
+        note ="import from excel",
+        invoice_number=ref_no,
     )
     db.add(new_purchase)
     db.flush() # Get new_purchase.id
@@ -73,10 +75,26 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
     # 5. Prepare Purchase Items for Bulk Insert
     purchase_items = []
     for _, row in batch_df.iterrows():
-        # Handle Expiry Date
+        # Handle Expiry Date with validation
         expiry = None
         if pd.notnull(row['item_expiry_date']):
-            expiry = pd.to_datetime(row['item_expiry_date']).date()
+            try:
+                # Use format='mixed' to handle out-of-bounds dates gracefully
+                expiry_date = pd.to_datetime(row['item_expiry_date'], format='mixed', errors='coerce')
+                
+                if pd.isna(expiry_date):
+                    # Try parsing as string manually for out-of-bounds dates
+                    from dateutil import parser
+                    expiry_date = parser.parse(str(row['item_expiry_date']))
+                    if expiry_date.year > 2262:
+                        expiry = expiry_date.replace(year=2262).date()
+                    else:
+                        expiry = expiry_date.date()
+                else:
+                    expiry = expiry_date.date()
+            except (ValueError, Exception):
+                # Invalid date format, skip
+                expiry = None
 
         # Build item mapping
         purchase_items.append({
@@ -86,6 +104,7 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
             "product_name": row["item_name"],
             "net_unit_cost": row["item_cost_price"],
             "quantity": row["item_quantity"],
+            "actual_quantity": row["item_quantity"],
             "item_tax": row["item_total_vat"],
             "expiry": expiry,
             "subtotal": row["item_total_cost_price"],
