@@ -12,6 +12,7 @@ from services.product_service import get_existing_product_codes, insert_missing_
 from services.purchase_service import create_purchase
 from services.purchase_rawabi_service import create_rawabi_purchase
 from services.report_service import generate_import_report
+from services.image_service import update_product_image, check_product_exists
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from model import Category, Supplier, Product
@@ -746,6 +747,95 @@ def upload_jarir_metadata(task_id: str, file_path: str):
         tasks[task_id]["status"] = "failed"
         log_step(task_id, f"❌ Error: {str(e)}")
 
+def process_images_file(task_id: str, file_path: str):
+    """
+    Process Excel file containing product_code and image_url columns.
+    Updates image_url_new column in sma_products table for matching products.
+    """
+    try:
+        start_time = datetime.datetime.now()
+        log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Step 1: Read Excel file
+        log_step(task_id, "Step 1: Reading Excel file...")
+        
+        # Try to read as CSV first, then fall back to Excel
+        try:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:
+                df = pd.read_excel(file_path, engine='openpyxl')
+        except Exception as e:
+            # If extension doesn't match content, try the other format
+            try:
+                df = pd.read_csv(file_path)
+            except:
+                df = pd.read_excel(file_path, engine='openpyxl')
+        
+        # Check if required columns exist
+        if 'product_code' not in df.columns or 'image_url' not in df.columns:
+            log_step(task_id, "❌ Error: Excel file must contain 'product_code' and 'image_url' columns")
+            tasks[task_id]["status"] = "failed"
+            return
+        
+        # Remove rows with missing values
+        df = df.dropna(subset=['product_code', 'image_url'])
+        log_step(task_id, f"📄 Loaded {len(df)} rows from file.")
+        
+        # Step 2: Process each row
+        log_step(task_id, "Step 2: Processing image updates...")
+        
+        session = SessionLocal()
+        updated_count = 0
+        not_found_count = 0
+        error_count = 0
+        
+        try:
+            for idx, row in df.iterrows():
+                product_code = str(row['product_code']).strip()
+                image_url = str(row['image_url']).strip()
+                
+                try:
+                    # Update product image
+                    if update_product_image(session, product_code, image_url):
+                        updated_count += 1
+                        if (idx + 1) % 100 == 0:  # Log progress every 100 rows
+                            log_step(task_id, f"   Processed {idx + 1}/{len(df)} rows...")
+                    else:
+                        not_found_count += 1
+                        log_step(task_id, f"⚠️ Product code '{product_code}' not found in database")
+                        
+                except Exception as e:
+                    error_count += 1
+                    log_step(task_id, f"❌ Error updating product '{product_code}': {str(e)}")
+            
+            # Final summary
+            log_step(task_id, f"")
+            log_step(task_id, f"📊 Summary:")
+            log_step(task_id, f"   ✅ Successfully updated: {updated_count}")
+            log_step(task_id, f"   ⚠️ Products not found: {not_found_count}")
+            log_step(task_id, f"   ❌ Errors: {error_count}")
+            
+        finally:
+            session.close()
+        
+        end_time = datetime.datetime.now()
+        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        total_duration = end_time - start_time
+        log_step(task_id, f"⏱️ Total Duration: {total_duration}")
+        
+        tasks[task_id]["status"] = "completed"
+        log_step(task_id, "✅ Image update completed successfully.")
+        
+    except Exception as e:
+        tasks[task_id]["status"] = "failed"
+        log_step(task_id, f"❌ Error: {str(e)}")
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 def jarir_process_file(task_id: str, file_path: str):
     try:
         created_purchase_ids = []
@@ -980,6 +1070,27 @@ async def upload_form(request: Request):
 @app.get("/rawabi/inventory", response_class=HTMLResponse)
 async def upload_form(request: Request):
     return templates.TemplateResponse("upload_rawabi_inventory.html", {"request": request})
+
+@app.get("/upload_images", response_class=HTMLResponse)
+async def upload_images_form(request: Request):
+    return templates.TemplateResponse("upload_images.html", {"request": request})
+
+@app.post("/upload_images")
+async def upload_images(file: UploadFile, background_tasks: BackgroundTasks):
+    task_id = str(uuid4())
+    file_location = f"temp/{task_id}_{file.filename}"
+    
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    tasks[task_id] = {
+        "status": "processing",
+        "logs": ["File received, starting image update..."],
+        "report_url": None
+    }
+
+    background_tasks.add_task(process_images_file, task_id, file_location)
+    return {"task_id": task_id}
 
 
 @app.post("/upload_old", response_class=HTMLResponse)

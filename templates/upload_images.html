@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Product Images Uploader</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background-color: #2f7676;
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 32px;
+        }
+
+        header p {
+            margin: 10px 0 0;
+            font-size: 16px;
+            color: #bdc3c7;
+        }
+
+        main {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px 20px;
+            min-height: calc(100vh - 200px);
+        }
+
+        .upload-box {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 600px;
+        }
+
+        .upload-box h2 {
+            margin-bottom: 20px;
+            font-size: 22px;
+            text-align: center;
+            color: #2c3e50;
+        }
+
+        .info-box {
+            background-color: #e8f4f8;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #2980b9;
+            font-size: 16px;
+        }
+
+        .info-box ul {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+
+        .info-box li {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #34495e;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 2px dashed #3498db;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background-color: #2980b9;
+        }
+
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        #logBox {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 13px;
+            color: #333;
+            line-height: 1.6;
+            display: none;
+        }
+
+        #logBox.active {
+            display: block;
+        }
+
+        footer {
+            background-color: #2f7676;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+            display: none;
+        }
+
+        .spinner.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Product Images Uploader</h1>
+    <p>Upload Excel file with product codes and image URLs</p>
+</header>
+
+<main>
+    <div class="upload-box">
+        <h2>Upload Product Images</h2>
+        
+        <div class="info-box">
+            <h3>📋 File Requirements:</h3>
+            <ul>
+                <li>File must be in CSV or Excel format (.csv, .xlsx, or .xls)</li>
+                <li>Required columns: <strong>product_code</strong> and <strong>image_url</strong></li>
+                <li>Product codes will be matched against the database</li>
+                <li>Image URLs will be stored in the <strong>image_url_new</strong> column</li>
+            </ul>
+        </div>
+
+        <input type="file" id="excelFile" accept=".csv,.xlsx,.xls" required>
+        <button id="uploadBtn" onclick="uploadFile()">Upload and Process</button>
+        
+        <div class="spinner" id="spinner"></div>
+        <div id="logBox"></div>
+    </div>
+</main>
+
+<footer>
+    &copy; 2025 Product Images Uploader. All rights reserved.
+</footer>
+
+<script>
+function uploadFile() {
+    const fileInput = document.getElementById('excelFile');
+    const logBox = document.getElementById('logBox');
+    const spinner = document.getElementById('spinner');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert("Please select a file.");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    logBox.innerHTML = "Uploading file...<br>";
+    logBox.classList.add('active');
+    spinner.classList.add('active');
+    uploadBtn.disabled = true;
+
+    fetch("/upload_images", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.task_id) {
+            pollStatus(data.task_id);
+        } else {
+            logBox.innerHTML += "Failed to start task.<br>";
+            spinner.classList.remove('active');
+            uploadBtn.disabled = false;
+        }
+    })
+    .catch(err => {
+        logBox.innerHTML += "Upload failed. Please try again.<br>";
+        spinner.classList.remove('active');
+        uploadBtn.disabled = false;
+        console.error(err);
+    });
+}
+
+function pollStatus(taskId) {
+    const logBox = document.getElementById('logBox');
+    const spinner = document.getElementById('spinner');
+    const uploadBtn = document.getElementById('uploadBtn');
+    
+    const interval = setInterval(() => {
+        fetch(`/status/${taskId}`)
+        .then(res => res.json())
+        .then(data => {
+            logBox.innerHTML = data.logs.join("<br>");
+            
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(interval);
+                spinner.classList.remove('active');
+                uploadBtn.disabled = false;
+                
+                if (data.status === 'completed') {
+                    logBox.innerHTML += "<br><br><strong style='color: green;'>✅ Process completed successfully!</strong>";
+                } else {
+                    logBox.innerHTML += "<br><br><strong style='color: red;'>❌ Process failed. Please check the logs above.</strong>";
+                }
+                
+                if (data.report_url) {
+                    logBox.innerHTML += `<br><a href="${data.report_url}" target="_blank" style="color: #3498db; font-weight: bold;">Download Report</a>`;
+                }
+            }
+        })
+        .catch(err => {
+            console.error('Error polling status:', err);
+        });
+    }, 1000);
+}
+</script>
+
+</body>
+</html>
