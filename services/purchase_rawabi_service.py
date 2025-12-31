@@ -71,6 +71,10 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
         'tot_sale': grand_total_sale, 'tax': total_vat, 'g_tot': grand_total,
         'stat': 'pending', 'uid': 9, 'pid': new_purchase.id
     })
+    db.flush()
+    
+    # Get the inserted sma_purchase_orders id
+    sma_po_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
 
     # 5. Prepare Purchase Items for Bulk Insert
     purchase_items = []
@@ -98,7 +102,7 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
 
         # Build item mapping
         purchase_items.append({
-            "purchase_id": new_purchase.id,
+            "purchase_id": sma_po_id,  # Use sma_purchase_orders.id instead of sma_purchases.id
             "product_id": product_map.get(str(row['item_code'])), # Look up from our map
             "product_code": row["item_code"],
             "product_name": row["item_name"],
