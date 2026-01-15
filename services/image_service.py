@@ -17,7 +17,7 @@ def update_product_image(session: Session, product_code: str, image_url: str) ->
         # Check if product exists and update image_url_new
         query = text("""
             UPDATE sma_products 
-            SET image_url_new = :image_url 
+            SET bawazir_image = :image_url 
             WHERE code = :product_code
         """)
         

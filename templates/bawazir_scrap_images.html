@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Bawazir Scrap Images</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background-color: #2f7676;
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 32px;
+        }
+
+        header p {
+            margin: 10px 0 0;
+            font-size: 16px;
+            color: #bdc3c7;
+        }
+
+        main {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        .upload-box {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .upload-box h2 {
+            margin-bottom: 20px;
+            font-size: 22px;
+            text-align: center;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            margin-bottom: 20px;
+            padding: 10px;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+        }
+
+        footer {
+            background-color: #2f7676;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>Vendor Image Scraping</h1>
+        <p>Bawazir - Images</p>
+    </header>
+
+    <main>
+
+        <div class="upload-box">
+            <h2>Enter Barcode</h2>
+            <input type="text" id="barcode" name="barcode" required placeholder="e.g. 3337875694469">
+            <button onclick="searchImage()">Search</button>
+            <div id="status-message" style="margin-top: 10px; color: #666;"></div>
+            <div id="result-container" style="margin-top: 20px; text-align: center;"></div>
+        </div>
+
+        {% if logs %}
+        <h3>Logs</h3>
+        <ul>
+            {% for log in logs %}
+            <li>{{ log }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </main>
+
+    <footer>
+        &copy; 2025 Inventory XLSX Data Importer. All rights reserved.
+    </footer>
+
+    <script>
+        async function searchImage() {
+            const barcodeInput = document.getElementById('barcode');
+            const statusMsg = document.getElementById('status-message');
+            const resultContainer = document.getElementById('result-container');
+
+            const barcode = barcodeInput.value.trim();
+            if (!barcode) {
+                alert("Please enter a barcode.");
+                return;
+            }
+
+            statusMsg.textContent = "Searching...";
+            resultContainer.innerHTML = '';
+
+            const url = "https://cki8cc4dwh-2.algolianet.com/1/indexes/*/queries?x-algolia-agent=Algolia%20for%20JavaScript%20(4.24.0)%3B%20Browser%20(lite)%3B%20instantsearch.js%20(4.78.3)%3B%20react%20(19.2.0-canary-3fbfb9ba-20250409)%3B%20react-instantsearch%20(7.15.8)%3B%20react-instantsearch-core%20(7.15.8)%3B%20next.js%20(15.3.8)%3B%20JS%20Helper%20(3.25.0)&x-algolia-api-key=e8bd4ecb2b7371e80ac1dd671f5e9656&x-algolia-application-id=CKI8CC4DWH";
+
+            // Construct the params string with the dynamic barcode
+            const paramsString = `clickAnalytics=true&facets=%5B%22ar_brand_name%22%2C%22featured%22%2C%22in_stock%22%5D&filters=store_id%3A1&highlightPostTag=__%2Fais-highlight__&highlightPreTag=__ais-highlight__&hitsPerPage=30&maxValuesPerFacet=2100&page=0&query=${barcode}&userToken=anonymous-a618ac7e-4cdd-4fa7-b26e-fd3f3fe40427`;
+
+            const payload = {
+                "requests": [
+                    {
+                        "indexName": "menus_production_grouping",
+                        "params": paramsString
+                    }
+                ]
+            };
+
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                statusMsg.textContent = "Search completed.";
+
+                if (data.results && data.results[0] && data.results[0].hits && data.results[0].hits.length > 0) {
+                    const hit = data.results[0].hits[0];
+                    if (hit.images && hit.images.length > 0) {
+                        const imageUrl = hit.images[0];
+                        console.log("Attempting to load image:", imageUrl);
+
+                        const img = document.createElement('img');
+                        img.src = imageUrl;
+                        img.alt = hit.en_name || "Product Image";
+                        img.style.maxWidth = "100%";
+                        img.style.borderRadius = "8px";
+                        img.style.display = "block"; // Ensure it takes up space
+                        img.style.margin = "0 auto"; // Center it
+
+                        img.onload = () => {
+                            console.log("Image loaded successfully");
+                            statusMsg.textContent = "Image loaded.";
+                        };
+
+                        img.onerror = (e) => {
+                            console.error("Image failed to load", e);
+                            statusMsg.innerHTML = `Failed to load image. <br>URL: <a href="${imageUrl}" target="_blank">${imageUrl}</a>`;
+                        };
+
+                        resultContainer.appendChild(img);
+
+                        // Show name
+                        const nameEl = document.createElement('p');
+                        nameEl.textContent = hit.en_name || hit.ar_name || "";
+                        nameEl.style.marginTop = "10px";
+                        resultContainer.appendChild(nameEl);
+
+                        // Debug text
+                        const debugEl = document.createElement('div');
+                        debugEl.style.fontSize = "10px";
+                        debugEl.style.color = "#888";
+                        debugEl.style.marginTop = "5px";
+                        debugEl.textContent = `Source: ${imageUrl}`;
+                        resultContainer.appendChild(debugEl);
+
+                    } else {
+                        statusMsg.textContent = "Product found, but no images available.";
+                    }
+                } else {
+                    statusMsg.textContent = "No product found with this barcode.";
+                }
+
+            } catch (err) {
+                console.error(err);
+                statusMsg.textContent = "Error occurred during search. Check console.";
+            }
+        }
+
+    </script>
+
+</body>
+
+</html>

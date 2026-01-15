@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 Base = declarative_base()
 
 class Product(Base):
-    __tablename__ = 'sma_products_ws'
+    __tablename__ = 'sma_products'
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
@@ -16,6 +16,7 @@ class Product(Base):
     price = Column(Float, nullable=False)
     category_id = Column(Integer)
     tax_rate = (Column(Integer))
+    image = Column(String(255), nullable=False)
 
 
 # models/purchase.py

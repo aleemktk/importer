@@ -40,36 +40,36 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
     
     ref_no = f"PR-{int(datetime.now().timestamp())}"
     
-    new_purchase = Purchase(
-        reference_no=ref_no,
-        date=datetime.now(),
-        supplier_id=supplier_id,
-        supplier=supplier_name,
-        warehouse_id=32,
-        total=grand_total_purchase,
-        total_net_purchase=grand_total_purchase,
-        total_sale=grand_total_sale,
-        total_tax=total_vat,
-        grand_total=grand_total,
-        status='received',
-        created_by=9,
-        note ="import from excel",
-        invoice_number=ref_no,
-    )
-    db.add(new_purchase)
-    db.flush() # Get new_purchase.id
+    # new_purchase = Purchase(
+    #     reference_no=ref_no,
+    #     date=datetime.now(),
+    #     supplier_id=supplier_id,
+    #     supplier=supplier_name,
+    #     warehouse_id=32,
+    #     total=grand_total_purchase,
+    #     total_net_purchase=grand_total_purchase,
+    #     total_sale=grand_total_sale,
+    #     total_tax=total_vat,
+    #     grand_total=grand_total,
+    #     status='received',
+    #     created_by=9,
+    #     note ="import from excel",
+    #     invoice_number=ref_no,
+    # )
+    # db.add(new_purchase)
+    # db.flush() # Get new_purchase.id
 
     # 4. Handle Dual Insertion (sma_purchase_orders)
     sma_po_sql = text("""
         INSERT INTO sma_purchase_orders (reference_no, date, supplier_id, supplier, warehouse_id, 
-        total, total_net_purchase, total_sale, total_tax, grand_total, status, created_by, purchase_id)
-        VALUES (:ref, :dt, :sid, :sname, :wid, :tot, :tot_net, :tot_sale, :tax, :g_tot, :stat, :uid, :pid)
+        total, total_net_purchase, total_sale, total_tax, grand_total, status, created_by)
+        VALUES (:ref, :dt, :sid, :sname, :wid, :tot, :tot_net, :tot_sale, :tax, :g_tot, :stat, :uid)
     """)
     db.execute(sma_po_sql, {
-        'ref': ref_no, 'dt': new_purchase.date, 'sid': supplier_id, 'sname': supplier_name,
+        'ref': ref_no, 'dt': datetime.now(), 'sid': supplier_id, 'sname': supplier_name,
         'wid': 32, 'tot': grand_total_purchase, 'tot_net': grand_total_purchase,
         'tot_sale': grand_total_sale, 'tax': total_vat, 'g_tot': grand_total,
-        'stat': 'pending', 'uid': 9, 'pid': new_purchase.id
+        'stat': 'pending', 'uid': 9
     })
     db.flush()
     
@@ -125,7 +125,7 @@ def create_rawabi_purchase(db: Session, batch_df: pd.DataFrame) -> dict:
         # Use bulk_insert_mappings if you have a PurchaseItem model
         db.bulk_insert_mappings(PurchaseItem, purchase_items)
     
-    return {"purchase_id": new_purchase.id}
+    return {"purchase_id": sma_po_id}
 
 
 

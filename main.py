@@ -21,6 +21,10 @@ from services.category_service import get_existing_categories, insert_missing_ca
 from services.jarir.purchase_service import create_purchase as jarir_create_purchase
 from sqlalchemy import tuple_
 import sys
+from openpyxl_image_loader import SheetImageLoader
+from openpyxl import load_workbook
+import requests
+from sqlalchemy import text
 
 import datetime
 app = FastAPI()
@@ -35,6 +39,8 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs("temp", exist_ok=True)
 
+IMAGE_UPLOAD_DIR = "images/products"
+os.makedirs(IMAGE_UPLOAD_DIR, exist_ok=True)
 
 tasks = {}
 
@@ -103,7 +109,7 @@ async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
         "status": "processing",
         "logs": ["File received, starting import..."],
         "report_url": None
-    }
+    } 
 
     background_tasks.add_task(jarir_process_file, task_id, file_location)
     return {"task_id": task_id}
@@ -149,12 +155,30 @@ def log_product_comparison(task_id, session, item_code, excel_row):
         log_step(task_id, f"   Excel: name='{excel_row['item_name']}', cost_price={excel_row['item_cost_price']}")
         log_step(task_id, f"   DB: name='{db_product.name}', cost={db_product.cost}")
 
-## RAWABI MASTER DATA
+def extract_and_save_image(item_code, row_number):
+    """
+    Extract image from Excel cell and save it to disk.
+    Returns image path or None.
+    """
+    try:
+        cell_ref = f"B{row_number}"  # Image column
+        if image_loader.image_in(cell_ref):
+            img = image_loader.get(cell_ref)
+            image_path = f"{IMAGE_DIR}/{item_code}.png"
+            img.save(image_path)
+            return image_path
+    except Exception as e:
+        print(f"⚠️ Image error for {item_code}: {e}")
+
+    return None
+
+
+## COMMERCE MASTER DATA
 def rawabi_products_process_file(task_id: str, file_path: str):
     try:
         start_time = datetime.datetime.now()
         log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
+
         # Step 1: Read Excel
         log_step(task_id, "Step 1: Reading Excel file...")
         df = pd.read_excel(file_path, header=None)
@@ -176,11 +200,10 @@ def rawabi_products_process_file(task_id: str, file_path: str):
         #     "item_vat": 0
         # })
 
-
         df.columns = [
             "item_code", "item_name", "item_batch_number",  "item_expiry_date",
-            "item_quantity",  "item_purchase_price", "vat_value",  "item_cost_price","item_sale_price", 
-            "supplier_id", "supplier_name"
+            "item_quantity", "item_sale_price",  "item_purchase_price", "item_cost_price",  "vat_value",  
+            "supplier_id", "supplier_name", "image"
         ]
 
         # Replace NaN values with 0 for numeric columns to avoid MySQL errors
@@ -192,6 +215,7 @@ def rawabi_products_process_file(task_id: str, file_path: str):
         log_step(task_id, f"✅ Removed duplicates. {len(df)} unique items remaining.")
 
         log_step(task_id, f"📄 Loaded {len(df)} rows from file.")
+
 
         # Step 2: Split into batches
         log_step(task_id, "Step 2: Splitting file into batches...")
@@ -213,17 +237,18 @@ def rawabi_products_process_file(task_id: str, file_path: str):
                 records = []
                 seen_in_this_batch = set() # To prevent duplicates if the same code repeats in this batch
 
-                for _, row in batch_df.iterrows():
+                for index, row in batch_df.iterrows():
                     item_code = str(int(row['item_code'])) if pd.notna(row['item_code']) else None
                     
                     # Skip if NaN, already in DB, or already processed in this specific batch loop
                     if item_code is None or item_code in seen_in_this_batch:
                         continue
                     
+                    
                     # Check if already exists in DB and log comparison
                     if item_code in existing_codes_set:
                         log_product_comparison(task_id, session, item_code, row)
-                        continue
+                        continue  
 
                     # Add to the insert list
                     records.append({
@@ -232,7 +257,9 @@ def rawabi_products_process_file(task_id: str, file_path: str):
                         "code": item_code,
                         "cost": row["item_cost_price"],
                         "price" : row["item_sale_price"],
-                        "tax_rate": 5
+                        #"category_id" : row['category'],
+                        "image" : row['image'],
+                        "tax_rate": 5 if row["vat_value"] == '15' else row["vat_value"]
                     })
                     
                     # Mark as seen so if it appears again in the same batch, it's skipped
@@ -367,10 +394,15 @@ def rawabi_inventory_process_file(task_id: str, file_path: str):
         df = pd.read_excel(file_path, header=None)
         df = df.iloc[1:].reset_index(drop=True)
         
+        # df.columns = [
+        #     "item_code", "item_name", "item_batch_number", "item_expiry_date",
+        #     "item_quantity", "item_sale_price", "item_purchase_price", "item_cost_price",  "vat_value", 
+        #      "supplier_id", "supplier_name","brand"
+        # ]
         df.columns = [
-            "item_code", "item_name", "item_batch_number", "item_expiry_date",
-            "item_quantity", "item_purchase_price", "vat_value", 
-            "item_cost_price", "item_sale_price", "supplier_id", "supplier_name"
+            "item_code", "item_name", "item_batch_number",  "item_expiry_date",
+            "item_quantity", "item_sale_price",  "item_purchase_price", "item_cost_price",  "vat_value",  
+            "supplier_id", "supplier_name", "image"
         ]
 
         # Critical Validation: Remove rows with null item_code
@@ -441,6 +473,8 @@ def sync_products_in_db(task_id, df):
                     "code": code,
                     "name": row["item_name"],
                     "name_ar": row["item_name"],
+                    "cost": row["item_cost_price"],
+                    "price": row["item_sale_price"],
                     "tax_rate": row["vat_value"]
                 })
                 seen_in_df.add(code)
@@ -609,144 +643,6 @@ def process_file(task_id: str, file_path: str):
 
 
 
-
-def upload_jarir_metadata(task_id: str, file_path: str):
-    try:
-        
-        start_time = datetime.datetime.now()
-        log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        log_step(task_id, "Step 1: Reading Excel file...")
-        df = pd.read_excel(file_path, header=None)
-        df = df.iloc[1:].reset_index(drop=True)
-
-        # df.columns = [
-        #     "item_code", "item_name", "item_batch_number", "item_ascon_code", "item_expiry_date",
-        #     "item_quantity", "item_sale_price", "item_total_sale_price",
-        #     "item_purchase_price", "item_total_purchase_price",
-        #     "item_cost_price", "item_total_cost_price",
-        #     "vat_value", "item_total_vat", "item_total_after_vat"
-        # ]
-        # ProductId	Product	StockId	PackUnits	Packs	Units	SalePrice	CostPrice	DealCost	TotalSale	TotalCost	TotalDealCost	BatchNo	Expiry	Branch	Store	Supplier	Category	Group	VAT
-        # ProductId	ProductEn	ProductAr	Barcode	StockId	PackUnits	Packs	Units	SalePrice	CostPrice	TotalSale	TotalCost	BatchNo	Expiry	Branch	Store	Supplier	Category
-
-        df.columns = [
-            "item_code", 
-            "item_name",
-            "stock_id", 
-            "item_packs_units", 
-            "item_quantity", 
-            "item_units",
-            "item_sale_price", 
-            "item_cost_price",
-            "item_purchase_price",
-            "item_total_sale_price", 
-            "item_total_cost_price",
-            "item_total_purchase_price",
-            "item_batch_number",
-            "item_expiry_date", 
-            "branch", 
-            "store", 
-            "supplier",
-            "category",
-            "group"
-        ]
-
-       
-
-        log_step(task_id, "Step 2: Splitting file into batches...")
-        batches = split_dataframe_in_batches(df, BATCH_SIZE)
-
-        for i, batch_df in enumerate(batches):
-           
-            session = SessionLocal()
-            try:
-                
-                log_step(task_id, f"➡️ Processing batch {i + 1}...")
-
-                 # Step 1: Add suppliers if not exist
-                log_step(task_id, "➡️ Checking suppliers...")
-
-                suppliers_in_batch = batch_df["supplier"].dropna().unique().tolist()
-                existing_suppliers = get_existing_suppliers(session, suppliers_in_batch)
-
-                missing_suppliers = [s for s in suppliers_in_batch if s not in existing_suppliers]
-
-                if missing_suppliers:
-                    log_step(task_id, f"➡️ Inserting {len(missing_suppliers)} new suppliers...")
-                    suppliers_to_insert = [{"name": s} for s in missing_suppliers]
-                    insert_missing_suppliers(session, suppliers_to_insert)
-                else:
-                    log_step(task_id, "✅ No new suppliers to add.")
-
-                 # Step 2: Add categories if not exist
-                log_step(task_id, "➡️ Checking categories...")
-
-                categories_in_batch = batch_df["category"].dropna().unique().tolist()
-                existing_categories = get_existing_categories(session, categories_in_batch)
-
-                missing_categories = [c for c in categories_in_batch if c not in existing_categories]
-
-                if missing_categories:
-                    log_step(task_id, f"➡️ Inserting {len(missing_categories)} new categories...")
-                    categories_to_insert = [{"name": c, "parent_id" : 0} for c in missing_categories]
-                    insert_missing_categories(session, categories_to_insert)
-                else:
-                    log_step(task_id, "✅ No new categories to add.")    
-
-               # 2. Refresh all parent categories from DB (name -> id map)
-                all_parent_categories = session.query(Category).filter(Category.name.in_(categories_in_batch)).all()
-                parent_category_map = {cat.name: cat.id for cat in all_parent_categories}
-
-                subcategories_set = set()
-                for _, row in batch_df.iterrows():
-                    parent_name = row["category"]
-                    sub_name = row.get("group")
-                    if pd.notna(parent_name) and pd.notna(sub_name):
-                        parent_id = parent_category_map.get(parent_name)
-                        if parent_id:
-                            subcategories_set.add((sub_name.strip(), parent_id))     
-               
-                existing_subcategories = session.query(Category).filter(
-                    tuple_(Category.name, Category.parent_id).in_(subcategories_set)
-                     ).all()
-                existing_sub_map = {(c.name, c.parent_id) for c in existing_subcategories}    
-
-                missing_subcategories = [
-                    {"name": name, "parent_id": pid} 
-                    for (name, pid) in subcategories_set
-                    if (name, pid) not in existing_sub_map
-                ]        
-
-                if missing_subcategories:
-                 log_step(task_id, f"➡️ Inserting {len(missing_subcategories)} new subcategories...")
-                 insert_missing_categories(session, missing_subcategories)
-                else:
-                    log_step(task_id, "✅ No new subcategories to add.")
-
-
-                log_step(task_id, f"✅ Batch {i + 1} inserted successfully.")
-            except Exception as e:
-                session.rollback()
-                log_step(task_id, f"❌ Error in batch {i + 1}: {str(e)}")
-            finally:
-                session.close()
-
-        log_step(task_id, "Step 3: All batches processed successfully.")
-
-        end_time = datetime.datetime.now()
-        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")    
-
-        total_duration = end_time - start_time
-        log_step(task_id, f"⏱️ Total Duration: {total_duration}")
-
-        tasks[task_id]["status"] = "completed"
-        log_step(task_id, "✅ Import completed successfully.")
-
-    except Exception as e:
-        tasks[task_id]["status"] = "failed"
-        log_step(task_id, f"❌ Error: {str(e)}")
-
 def process_images_file(task_id: str, file_path: str):
     """
     Process Excel file containing product_code and image_url columns.
@@ -836,212 +732,166 @@ def process_images_file(task_id: str, file_path: str):
         if os.path.exists(file_path):
             os.remove(file_path)
 
-def jarir_process_file(task_id: str, file_path: str):
+def update_product_barcode(session, product_code, data):
+    product = session.query(Product).filter_by(code=product_code).first()
+    print(data)
+    # error updating product '748927068351': 'str' object has no attribute 'get'
+    if product:
+         product_data = data.get('product', {})                     
+         product_name = product_data.get('name')
+         image_url = product_data.get('imageUrl')
+         product_upc = product_data.get('upc')
+         product_ean = product_data.get('ean')
+         description = product_data.get('description')
+         product_barcode_url = data.get('barcodeUrl')
+
+         query = text("""
+                    UPDATE sma_products 
+                    SET product_image = :image_url ,
+                       product_name_external = :product_name,
+                       upc = :product_upc,
+                       ean = :product_ean,
+                      product_details = :description,
+                      external_barcode_url =:product_barcode_url
+                    WHERE code = :product_code
+                """)
+                
+         result = session.execute(query, {
+                    "image_url": image_url,
+                    "product_name" : product_name,
+                    "product_upc" : product_upc,
+                    "product_ean" : product_ean,
+                    "description" : description,
+                    "product_barcode_url" : product_barcode_url,
+                    "product_code": product_code,
+
+                })
+         session.commit()
+         return True
+
+
+def process_external_images(task_id: str, file_path: str):
+    """
+    Process Excel file containing product_code and image_url columns.
+    Updates image_url_new column in sma_products table for matching products.
+    """
     try:
-        created_purchase_ids = []
-        created_transfer_ids = []
         start_time = datetime.datetime.now()
         log_step(task_id, f"📅 Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
+        # Step 1: Read Excel file
         log_step(task_id, "Step 1: Reading Excel file...")
-        df = pd.read_excel(file_path, header=None)
-        df = df.iloc[1:].reset_index(drop=True)
-
-        # df.columns = [
-        #     "item_code", "item_name", "item_batch_number", "item_ascon_code", "item_expiry_date",
-        #     "item_quantity", "item_sale_price", "item_total_sale_price",
-        #     "item_purchase_price", "item_total_purchase_price",
-        #     "item_cost_price", "item_total_cost_price",
-        #     "vat_value", "item_total_vat", "item_total_after_vat"
-        # ]
-        # ProductId	Product	StockId	PackUnits	Packs	Units	SalePrice	CostPrice	DealCost	TotalSale	TotalCost	TotalDealCost	BatchNo	Expiry	Branch	Store	Supplier	Category	Group	VAT
-        # ProductId	ProductEn	ProductAr	Barcode	StockId	PackUnits	Packs	Units	SalePrice	CostPrice	TotalSale	TotalCost	BatchNo	Expiry	Branch	Store	Supplier	Category
-
-        df.columns = [
-            "item_code", 
-            "item_name",
-            "stock_id", 
-            "item_packs_units", 
-            "item_quantity", 
-            "item_units",
-            "item_sale_price", 
-            "item_cost_price",
-            "item_purchase_price",
-            "item_total_sale_price", 
-            "item_total_cost_price",
-            "item_total_purchase_price",
-            "item_batch_number",
-            "item_expiry_date", 
-            "branch", 
-            "store", 
-            "supplier",
-            "category",
-            "group"
-        ]
-
-        df['item_total_vat'] = 0 
-        df['item_total_after_vat'] = 0
-        df['total_sale_vat'] = 0
-        df['total_sale'] = 0
-
-        df["item_sale_price"] = (
-            df["item_sale_price"]
-            .astype(str)
-            .str.replace(",", "")
-            .astype(float)
-        )
-        df["item_cost_price"] = (
-            df["item_cost_price"]
-            .astype(str)
-            .str.replace(",", "")
-            .astype(float)
-        )
-
-        df["item_total_sale_price"] = (
-            df["item_total_sale_price"]
-            .astype(str)
-            .str.replace(",", "")
-            .astype(float)
-        )
-
-        df["item_total_cost_price"] = (
-            df["item_total_cost_price"]
-            .astype(str)
-            .str.replace(",", "")
-            .astype(float)
-        )
-
-        vat_categories = [
-            "BABY TOOLS VAT",
-            "COSMETICS BEAUTY CARE VAT",
-            "COSMOTHERAPEUTICS VAT",
-            "DEVICES WITH VAT",
-            "MECICAL USE ITEMS VAT",
-            "SUPPLEMENTS AND HERBALS VAT",
-            "TOOLS WITH VAT",
-        ]
-
-        df['item_total_vat'] = 0.0
-        df['item_total_after_vat'] = 0.0
-        df['total_sale_vat'] = 0.0
-        df['total_sale'] = 0.0
-
-        vat_mask = df["category"].isin(vat_categories)
-        # Calculate VAT on item cost price (15%)
-        df.loc[vat_mask, 'item_total_vat'] = df.loc[vat_mask, 'item_total_cost_price'] * 0.15
-        # Total cost price after VAT
-        df.loc[vat_mask, 'item_total_after_vat'] = df.loc[vat_mask, 'item_total_cost_price'] + df.loc[vat_mask, 'item_total_vat']
-        # Calculate VAT on sale price (15%)
-        df.loc[vat_mask, 'total_sale_vat'] = df.loc[vat_mask, 'item_total_sale_price'] * 0.15
-        # Total sale price after VAT
-        df.loc[vat_mask, 'total_sale'] = df.loc[vat_mask, 'item_total_sale_price'] + df.loc[vat_mask, 'total_sale_vat']
-
-        # For rows NOT in vat categories, keep totals same as original prices (no VAT)
-        df.loc[~vat_mask, 'item_total_after_vat'] = df.loc[~vat_mask, 'item_total_cost_price']
-        df.loc[~vat_mask, 'total_sale'] = df.loc[~vat_mask, 'item_total_sale_price']
-
-
-
-        #df["total_sale_vat"] = df["item_total_sale_price"] * df["vat_value"]
-        #df["total_sale"] = df["item_total_sale_price"] + df["total_sale_vat"]
-
-        log_step(task_id, "Step 2: Splitting file into batches...")
-        batches = split_dataframe_in_batches(df, BATCH_SIZE)
-        # batches = [(supplier, group) for supplier, group in df.groupby("supplier")]
-
-        for i, batch_df in enumerate(batches):
-           
-            session = SessionLocal()
+        
+        # Try to read as CSV first, then fall back to Excel
+        try:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:
+                df = pd.read_excel(file_path, engine='openpyxl')
+        except Exception as e:
+            # If extension doesn't match content, try the other format
             try:
+                df = pd.read_csv(file_path)
+            except:
+                df = pd.read_excel(file_path, engine='openpyxl')
+        
+        # Check if required columns exist
+        if 'product_code' not in df.columns:
+            log_step(task_id, "❌ Error: Excel file must contain 'product_code' columns")
+            tasks[task_id]["status"] = "failed"
+            return
+        
+        # Remove rows with missing values
+        df = df.dropna(subset=['product_code'])
+        log_step(task_id, f"📄 Loaded {len(df)} rows from file.")
+        
+        # Step 2: Process each row
+        log_step(task_id, "Step 2: Processing image extracting...")
+        
+        session = SessionLocal()
+        updated_count = 0
+        not_found_count = 0
+        error_count = 0
+        
+        try:
+            for idx, row in df.iterrows():
+                product_code = str(row['product_code']).strip()
+                API_BASE_URL = 'https://go-upc.com/api/v1/code/'
+                API_KEY = '20d20032dee9b95ff500dd1d47470e110391c9d12b3e0c50b93fd9c76b7a69a9'
                 
-                print("Before cleaning:")
-                print(batch_df["item_code"].head(5)) 
-                batch_df["item_code"] = batch_df["item_code"].astype(str).apply(lambda x: x.split(",")[0].strip())
-                print("\nAfter cleaning:")
-                print(batch_df["item_code"].head(5))
-                log_step(task_id, f"➡️ Processing batch {i+1}...")
-
-                categories_in_batch = batch_df["group"].dropna().unique().tolist()
-                 
-                category_map = dict(
-                    session.query(Category.name, Category.id)
-                    .filter(Category.name.in_(categories_in_batch))
-                    .all()
-                )    
-
-                product_codes = batch_df["item_code"].unique().tolist()
-                existing_codes = get_existing_product_codes(session, product_codes)
-
-                log_step(task_id, f"➡️ Checking missing product ...")
-
-                missing_products = batch_df[~batch_df["item_code"].isin(existing_codes)]
-                missing_products = missing_products.drop_duplicates(subset=["item_code"])
-
-                products_to_insert = missing_products.apply(lambda row: {
-                    "name": row["item_name"],
-                    "item_code": row["item_code"],
-                    "code" : row["item_code"],
-                    "category_id": category_map.get(row["category"]),
-                    "cost_price": row["item_cost_price"],
-                    "sale_price": row["item_sale_price"],
-                }, axis=1).tolist()
-
-                log_step(task_id, f"➡️ Insert missing products...")
-
-                insert_missing_products(session, products_to_insert)
-
-                log_step(task_id, f"➡️ Create Purchase {i+1}...")
-
-                supplier_record = (
-                        session.query(Supplier.name, Supplier.id)
-                        .filter(Supplier.name == batch_df['supplier'])
-                        .first()
-                    )
-                if supplier_record:
-                    batch_df["supplier_name"] = supplier_record.name
-                    batch_df["supplier_id"] = supplier_record.id
-                else:
-                    batch_df["supplier_name"] = 'Internal supplier'
-                    batch_df["supplier_id"] = '786'
-
-                result = jarir_create_purchase(session, batch_df)
-                if result.get("purchase_id"):
-                    created_purchase_ids.append(result["purchase_id"])
-    
-                # if result.get("transfer_id"):
-                #     created_transfer_ids.append(result["transfer_id"])
-
-
-                log_step(task_id, f"✅ Batch {i+1} inserted successfully.")
-            except Exception as e:
-                session.rollback()
-                log_step(task_id, f"❌ Error in batch {i+1}: {str(e)}")
-            finally:
-                session.close()
-
-        log_step(task_id, "Step 3: All batches processed successfully.")
-        log_step(task_id, "Step 4: Generating report...")
-
-        # Save dummy report (you'll replace this logic later)
-        # report_path = f"reports/{task_id}_report.xlsx"
-        # os.makedirs("reports", exist_ok=True)
-        # with open(report_path, "w") as f:
-        #     f.write("Dummy Excel content")
-        generate_excel_report(task_id, session, purchase_ids=created_purchase_ids, transfer_ids=created_transfer_ids)
-
+                try:
+                    # Update product image
+                    # https://go-upc.com/api/v1/code/748927068801?key=20d20032dee9b95ff500dd1d47470e110391c9d12b3e0c50b93fd9c76b7a69a9
+                    api_url = f"{API_BASE_URL}{product_code}?key={API_KEY}"
+                    response = requests.get(api_url)
+                    if response.status_code == 200:
+                        print(response)
+                        data = response.json()
+                        
+                    
+                        # 2. Update Database
+                        # Assuming update_product_image now handles image_url and description
+                        if update_product_barcode(session, product_code, data):
+                            updated_count += 1
+                        else:
+                            not_found_count += 1
+                            log_step(task_id, f"⚠️ Product code '{product_code}' not found in local database")
+                    elif response.status_code == 404:
+                        not_found_count += 1
+                        log_step(task_id, f"⚠️ Product code '{product_code}' not found in Go-UPC API")
+                
+                    else:
+                        error_count += 1
+                        log_step(task_id, f"❌ API Error for '{product_code}': Status {response.status_code}")        
+            
+                        
+                except Exception as e:
+                    error_count += 1
+                    log_step(task_id, f"❌ Error updating product '{product_code}': {str(e)}")
+            
+            # Final summary
+            log_step(task_id, f"")
+            log_step(task_id, f"📊 Summary:")
+            log_step(task_id, f"   ✅ Successfully updated: {updated_count}")
+            log_step(task_id, f"   ⚠️ Products not found: {not_found_count}")
+            log_step(task_id, f"   ❌ Errors: {error_count}")
+            
+        finally:
+            session.close()
+        
         end_time = datetime.datetime.now()
-        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")    
-
+        log_step(task_id, f"📅 End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         total_duration = end_time - start_time
         log_step(task_id, f"⏱️ Total Duration: {total_duration}")
-
+        
         tasks[task_id]["status"] = "completed"
-        tasks[task_id]["report_url"] = f"/download/{task_id}"
-        log_step(task_id, "✅ Import completed successfully.")
-
+        log_step(task_id, "✅ Image update completed successfully.")
+        
     except Exception as e:
         tasks[task_id]["status"] = "failed"
         log_step(task_id, f"❌ Error: {str(e)}")
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(file_path):
+            os.remove(file_path)            
+
+@app.post("/import_external_images")
+async def import_external_images(file: UploadFile, background_tasks: BackgroundTasks):
+    task_id = str(uuid4())
+    file_location = f"temp/{task_id}_{file.filename}"
+    
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    tasks[task_id] = {
+        "status": "processing",
+        "logs": ["File received, starting image import..."],
+        "report_url": None
+    }
+
+    background_tasks.add_task(process_external_images, task_id, file_location)
+    return {"task_id": task_id}
 
 @app.get("/download/{task_id}")
 def download_report(task_id: str):
@@ -1070,6 +920,10 @@ async def upload_form(request: Request):
 @app.get("/rawabi/inventory", response_class=HTMLResponse)
 async def upload_form(request: Request):
     return templates.TemplateResponse("upload_rawabi_inventory.html", {"request": request})
+
+@app.get("/import_external_images", response_class=HTMLResponse)
+async def upload_form(request: Request):
+    return templates.TemplateResponse("import_external_images.html", {"request": request})
 
 @app.get("/upload_images", response_class=HTMLResponse)
 async def upload_images_form(request: Request):
